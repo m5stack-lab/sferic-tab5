@@ -57,13 +57,53 @@ unavailable.
    materially (drop `thread`/`ieee802154` and `ble` from the initial scope;
    narrow `wifi` to scan/AP).
 
+## Camera — PASS (spike `[env:cam]`, 2026-09-03)
+
+Framework decision (ADR-0013 §2): the camera needs `esp_video`, an ESP-IDF
+component → `[env:cam]` is **`framework = espidf`**, pioarduino platform
+`55.03.38-1` (IDF 5.5.4), board `m5stack-tab5-p4` (vendored). We replicate
+esp-bsp's `bsp_camera_start()` by hand (I2C bus 1 + PI4IOE5V6408 `0x43` pin 6
+to power the camera + `esp_video_init` MIPI-CSI) to avoid dragging in the
+BSP's LVGL/display stack, which currently wants a newer IDF than the
+platform ships.
+
+| Step | Result |
+|---|---|
+| toolchain (espidf + esp_video) | ✅ builds + flashes |
+| camera power (IO expander `0x43` pin 6) | ✅ `ESP_OK` |
+| SC202CS sensor detect | ✅ `PID=0xeb52` on I2C |
+| `esp_video_init` + MIPI-CSI | ✅ `ESP_OK` |
+| V4L2 stream | ✅ **1280×720 RGB565**, 1800 KB/buf |
+| frame rate | ✅ steady **30.0 fps** |
+| ISP / auto-exposure | ✅ after the `fix_esp_ipa.py` workaround — `lum avg` 7 → ~51, real dynamic range |
+| CCM (colour matrix) | ⚠️ one SC202CS IPA coefficient (4.011) exceeds the ISP's ±4.0 → CCM rejected once at init; capture unaffected, colours a bit flat. Fixable in a custom IPA JSON. |
+
+Gotchas hit (all solved, documented in `platformio.ini` / this repo):
+- PlatformIO Core **6.2.0b2** breaks the ESP-IDF builder (`SCons.Tool.
+  FortranCommon` gone in SCons 4.9) → use **stable 6.1.19** on Python 3.12
+  for `[env:cam]`. (6.2 was only needed for the 54.x pioarduino postinstall,
+  which is a one-time thing.)
+- `<M5Unified.h>` in the same TU as the BSP clashes (`i2c_config_t` redef:
+  IDF i2c driver vs `espressif__i2c_bus`) → the spike is pure IDF, no
+  M5Unified. The display path (M5GFX vs BSP LCD) is an ADR-0013 §4 item.
+- `espressif/m5stack_tab5` (any version) pulls `esp_lvgl_port ^2` which
+  needs IDF > 5.5.4 (`on_frame_buf_complete`) → don't use the full BSP;
+  depend on `esp_video` + `esp_io_expander_pi4ioe5v6408` directly.
+- `esp_ipa`'s prebuilt lib ships a placeholder `esp_ipa_pipeline_get_config`
+  that shadows the generated SC202CS one → `extra_scripts/fix_esp_ipa.py`
+  strips it pre-link (from amcchord/M5Tab5-VideoLink).
+
 ## Next actions
 
-- [ ] ADR-0013 amendment: Tab5 radio scoping (done → link it here).
-- [ ] microSD LDO power config (`sd_pwr_ctrl` on-chip LDO) — needed for
-      store-and-forward (§7).
+- [x] ADR-0013 amendment: Tab5 radio scoping.
+- [x] Camera bring-up → PASS at 720p30.
+- [ ] CCM clamp: a custom SC202CS IPA JSON with `[2][2] ≤ 4.0`.
+- [ ] microSD LDO power config (`sd_pwr_ctrl` on-chip LDO) — store-and-forward (§7).
 - [ ] Keyboard: trace the M-Bus header / test USB-HID host enumeration.
-- [ ] Camera (`esp_cam` / M5Unified) bring-up — the Tab5's headline toolset.
+- [ ] Resolve the hybrid question: can Arduino/M5Unified + `esp_video`
+      coexist (own TUs / drop `espressif__i2c_bus`), or does the Tab5
+      firmware go pure-IDF and render `ui_kit` through the BSP LCD path?
+      (ADR-0013 §4.)
 - [ ] Copy the board-agnostic sources + a Tab5 `board_profile.h`; wire
-      `dispatch` + WS `ws_station`; declare `wifi`(scan) + the Tab5-specific
-      toolsets to the collector (no collector changes needed — ADR-0013 §8).
+      `dispatch` + WS `ws_station`; declare `wifi`(scan) + `camera` toolsets
+      to the collector (no collector changes needed — ADR-0013 §8).

@@ -1,0 +1,8 @@
+## IDF-managed components for [env:cam]. We replicate bsp_camera_start()
+## (esp-bsp/m5stack_tab5) by hand — I2C bus + PI4IOE5V6408 camera-power
+## enable + esp_video_init — to avoid the full BSP pulling esp_lvgl_port /
+## lvgl (which currently want a newer IDF than the platform ships).
+dependencies:
+  idf: ">=5.4"
+  espressif/esp_video: "~2.0"
+  espressif/esp_io_expander_pi4ioe5v6408: "*"

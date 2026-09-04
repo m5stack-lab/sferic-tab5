@@ -16,9 +16,9 @@ works on this board" before any tool or UI code is ported. Results:
 - ✅ display / touch / IMU / 32 MB PSRAM
 - ⚠️ SD — `SD_MMC` times out (card? pin config?)
 - ⚠️ keyboard — not on either I2C bus; connection method TBD
-- ❌ **radio (ESP32-C6 via esp_hosted/SDIO) — fails to init and panics.**
-  This is the gate; until it's solved there is no Wi-Fi / BLE / 802.15.4
-  and monitor mode can't be tested.
+- ⚠️ **radio (ESP32-C6)** — link works with `WiFi.setPins()`; STA + scan OK,
+  but **monitor mode is `ESP_ERR_NOT_SUPPORTED`** over esp_hosted (ADR §2
+  gate — answered). Tab5 wifi.* = scan/AP class only.
 
 ## Toolchain
 

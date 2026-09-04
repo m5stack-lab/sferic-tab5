@@ -1,47 +1,43 @@
-// sferic-tab5 bring-up spike (ADR-0013 §2) — v2.
+// sferic-tab5 bring-up spike (ADR-0013 §2) — v3: the C6 radio.
 //
-// v1 found: P4 toolchain + M5Unified work; display/touch/IMU/PSRAM pass;
-// SD needs SD_MMC (not SPI SD); the keyboard is not on I2C bus 0; and
-// touching Wi-Fi crashes the device — the ESP32-C6 esp_hosted/SDIO link
-// fails to init ("H_SDIO_DRV: sdio card init failed" -> FreeRTOS abort).
+// v1/v2 established: P4 toolchain + M5Unified work; display/touch/IMU/PSRAM
+// pass; touching Wi-Fi crashed because esp_hosted used the Espressif-devkit
+// SDIO pins, not the Tab5's.
 //
-// v2 therefore leaves the radio alone (that is its own sub-task: get the
-// C6 slave firmware / esp_hosted config right) and nails down SD + keyboard.
+// The fix (arduino-esp32 3.2.1, PR #11513): WiFi.setPins(clk,cmd,d0..d3,rst)
+// with the Tab5's SDIO2 -> C6 wiring, called before any Wi-Fi use.
+//   CLK 12  CMD 13  D0 11  D1 10  D2 9  D3 8  RST 15
+//
+// This spike: bring the C6 up, scan, then the real ADR §2 question —
+// does *promiscuous / monitor mode* work over esp_hosted?
 
 #include <M5Unified.h>
-#include <SD_MMC.h>
-#include <Wire.h>
+#include <WiFi.h>
+#include <esp_wifi.h>
+
+// Tab5 SDIO2 -> ESP32-C6
+static constexpr int C6_CLK = 12, C6_CMD = 13, C6_D0 = 11, C6_D1 = 10, C6_D2 = 9,
+                     C6_D3 = 8, C6_RST = 15;
 
 namespace {
 
 void line(const char* name, const char* verdict, const char* fmt, ...) {
-  char detail[110];
+  char d[120];
   va_list ap;
   va_start(ap, fmt);
-  vsnprintf(detail, sizeof(detail), fmt, ap);
+  vsnprintf(d, sizeof(d), fmt, ap);
   va_end(ap);
-  Serial.printf("[spike] %-10s %-4s  %s\n", name, verdict, detail);
-  uint16_t c = TFT_WHITE;
-  if (!strcmp(verdict, "PASS")) c = TFT_GREEN;
-  else if (!strcmp(verdict, "FAIL")) c = TFT_RED;
-  else c = TFT_YELLOW;
+  Serial.printf("[spike] %-10s %-4s  %s\n", name, verdict, d);
+  uint16_t c = !strcmp(verdict, "PASS")   ? TFT_GREEN
+               : !strcmp(verdict, "FAIL") ? TFT_RED
+                                          : TFT_YELLOW;
   M5.Display.setTextColor(c, TFT_BLACK);
-  M5.Display.printf("%-9s %-4s %s\n", name, verdict, detail);
+  M5.Display.printf("%-9s %-4s %s\n", name, verdict, d);
 }
 
-void scanI2C(TwoWire& bus, const char* label) {
-  int found = 0;
-  char list[80] = {0};
-  for (uint8_t a = 1; a < 127; a++) {
-    bus.beginTransmission(a);
-    if (bus.endTransmission() == 0) {
-      found++;
-      char b[6];
-      snprintf(b, sizeof(b), "%02x ", a);
-      strncat(list, b, sizeof(list) - strlen(list) - 1);
-    }
-  }
-  line(label, found ? "INFO" : "INFO", "%d dev: %s", found, found ? list : "-");
+volatile uint32_t g_pkts = 0;
+void promiscCb(void*, wifi_promiscuous_pkt_type_t) {
+  g_pkts = g_pkts + 1;
 }
 
 }  // namespace
@@ -51,68 +47,71 @@ void setup() {
   M5.begin(cfg);
   Serial.begin(115200);
   delay(400);
-  M5.Display.setRotation(1);  // landscape
+  M5.Display.setRotation(1);
   M5.Display.fillScreen(TFT_BLACK);
   M5.Display.setTextSize(2);
   M5.Display.setCursor(8, 8);
 
-  Serial.println("\n\n=== sferic-tab5 bring-up spike v2 (ADR-0013) ===");
-  Serial.printf("chip: %s rev %d, %d cores @ %d MHz\n", ESP.getChipModel(),
-                ESP.getChipRevision(), ESP.getChipCores(), getCpuFrequencyMhz());
-  M5.Display.printf("sferic-tab5 spike v2\n%s  %d MHz  %d cores\n\n",
-                   ESP.getChipModel(), getCpuFrequencyMhz(), ESP.getChipCores());
+  Serial.println("\n\n=== sferic-tab5 bring-up spike v3 — C6 radio (ADR-0013) ===");
+  Serial.printf("chip %s rev %d, %d cores @ %d MHz, arduino %s\n",
+                ESP.getChipModel(), ESP.getChipRevision(), ESP.getChipCores(),
+                getCpuFrequencyMhz(), ESP_ARDUINO_VERSION_STR);
+  M5.Display.printf("sferic-tab5 spike v3 (C6 radio)\narduino %s\n\n",
+                   ESP_ARDUINO_VERSION_STR);
 
-  line("psram", ESP.getPsramSize() ? "PASS" : "FAIL", "%u MB free %u KB",
-       (unsigned)(ESP.getPsramSize() / (1024 * 1024)),
-       (unsigned)(ESP.getFreePsram() / 1024));
+  line("psram", ESP.getPsramSize() ? "PASS" : "FAIL", "%u MB",
+       (unsigned)(ESP.getPsramSize() / (1024 * 1024)));
+  line("display", "PASS", "%dx%d", M5.Display.width(), M5.Display.height());
 
-  line("display", (M5.Display.width() > 0) ? "PASS" : "FAIL", "%dx%d rot1",
-       M5.Display.width(), M5.Display.height());
+  // --- C6 over esp_hosted / SDIO2 ---
+  const bool pinsOk = WiFi.setPins(C6_CLK, C6_CMD, C6_D0, C6_D1, C6_D2, C6_D3, C6_RST);
+  line("c6-pins", pinsOk ? "PASS" : "FAIL", "clk12 cmd13 d0-3=11/10/9/8 rst15");
 
-  const bool imu = M5.Imu.isEnabled();
-  float ax = 0, ay = 0, az = 0;
-  if (imu) M5.Imu.getAccel(&ax, &ay, &az);
-  line("imu", imu ? "PASS" : "FAIL", "accel %.2f %.2f %.2f", ax, ay, az);
+  WiFi.mode(WIFI_STA);
+  delay(300);
+  const uint8_t* mac = WiFi.macAddress().length() ? nullptr : nullptr;
+  (void)mac;
+  line("c6-link", WiFi.getMode() == WIFI_STA ? "PASS" : "FAIL", "sta mode, mac %s",
+       WiFi.macAddress().c_str());
 
-  // SD over SDMMC (the Tab5 slot is SDIO, not SPI). 1-bit, formatted mount off.
-  if (SD_MMC.begin("/sdcard", true, false)) {
-    line("sd", "PASS", "SD_MMC %llu MB", SD_MMC.cardSize() / (1024ULL * 1024ULL));
+  const int n = WiFi.scanNetworks(false, true);
+  if (n >= 0) {
+    char top[64] = "-";
+    if (n > 0)
+      snprintf(top, sizeof(top), "'%s' %ddBm ch%d", WiFi.SSID(0).c_str(),
+               WiFi.RSSI(0), WiFi.channel(0));
+    line("wifi-scan", "PASS", "%d APs, top %s", n, top);
   } else {
-    line("sd", "FAIL", "SD_MMC.begin() failed (card in?)");
+    line("wifi-scan", "FAIL", "scanNetworks -> %d", n);
   }
 
-  // Keyboard: not on I2C bus 0 in v1. Scan the exposed buses + note that a
-  // USB-HID keyboard (Tab5 as USB host) would not show here at all.
-  Wire.begin();
-  scanI2C(Wire, "i2c0");
-#if defined(WIRE1_PIN_SDA) || 1
-  Wire1.begin();
-  scanI2C(Wire1, "i2c1");
-#endif
-  line("keyboard", "TODO", "not on I2C; check M-Bus / USB-HID host");
+  // --- THE GATE: monitor mode over esp_hosted ---
+  esp_err_t e1 = esp_wifi_set_promiscuous(true);
+  esp_err_t e2 = esp_wifi_set_promiscuous_rx_cb(&promiscCb);
+  if (e1 != ESP_OK || e2 != ESP_OK) {
+    line("monitor", "FAIL", "set_promiscuous=0x%x set_rx_cb=0x%x", e1, e2);
+  } else {
+    g_pkts = 0;
+    const uint8_t chans[] = {1, 6, 11};
+    for (uint8_t c : chans) {
+      esp_wifi_set_channel(c, WIFI_SECOND_CHAN_NONE);
+      delay(1200);
+    }
+    esp_wifi_set_promiscuous(false);
+    line("monitor", g_pkts > 0 ? "PASS" : "FAIL", "%lu frames in 3.6s on ch 1/6/11",
+         (unsigned long)g_pkts);
+  }
 
-  // Touch: quick liveness — the controller was detected at M5.begin
-  // ("M5Tab5 ST touch FW version 01"); just report ready.
-  line("touch", "PASS", "controller detected at init");
-
-  line("radio", "BLOCKED", "C6 esp_hosted/SDIO init fails + panics; skipped");
-
-  Serial.println("=== spike v2 done ===");
+  Serial.println("=== spike v3 done ===");
 }
 
 void loop() {
   M5.update();
-  auto t = M5.Touch.getDetail();
-  if (t.wasPressed()) {
-    M5.Display.fillCircle(t.x, t.y, 10, TFT_CYAN);
-    Serial.printf("[spike] touch %d,%d\n", t.x, t.y);
-  }
   static uint32_t beat = 0;
   if (millis() - beat > 5000) {
     beat = millis();
-    Serial.printf("[spike] alive up=%lus heap=%uKB psram=%uKB\n",
-                  millis() / 1000, (unsigned)(ESP.getFreeHeap() / 1024),
-                  (unsigned)(ESP.getFreePsram() / 1024));
+    Serial.printf("[spike] alive up=%lus heap=%uKB\n", millis() / 1000,
+                  (unsigned)(ESP.getFreeHeap() / 1024));
   }
   delay(20);
 }

@@ -1,9 +1,7 @@
-!sdkconfig.defaults
-.DS_Store
 .pio/
 .vscode/
-dependencies.lock
+.DS_Store
 managed_components/
+dependencies.lock
 sdkconfig.*
-sdkconfig.m5stack-tab5-p4
-sdkconfig.spike
+!sdkconfig.defaults

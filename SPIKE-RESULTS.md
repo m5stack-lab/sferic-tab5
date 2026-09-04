@@ -19,36 +19,51 @@ Run 2026-09-03 on the physical Tab5. `src/main.cpp` (v2). PlatformIO 6.2.0b2
 | **radio / C6 link** | ✅ PASS (v3) | `WiFi.setPins(12,13,11,10,9,8,15)` before `WiFi.mode()` — arduino-esp32 3.2.1, PR #11513. `esp_hosted` SDIO2 → C6 comes up, no crash. STA mode OK, C6 MAC `58:E6:C5:21:62:50`. |
 | **wifi.scan** | ✅ PASS (v3) | `WiFi.scanNetworks()` → 32 APs, strongest −39 dBm ch6. Normal STA/AP Wi-Fi works over the C6. |
 | **wifi monitor mode** | ❌ **NOT SUPPORTED** (v3) | `esp_wifi_set_promiscuous(true)` → `0x106` = `ESP_ERR_NOT_SUPPORTED`. `esp_hosted` / `esp_wifi_remote` does not expose promiscuous RX. **This is the ADR-0013 §2 gate — answered.** |
+| **wifi raw TX** | ❌ NOT SUPPORTED (v4) | `esp_wifi_80211_tx()` → `0x106` `ESP_ERR_NOT_SUPPORTED`. No frame injection over `esp_hosted` either. |
+| **BLE** | ❌ off (v4) | `CONFIG_BT_ENABLED` is **not set** in the stock pioarduino P4 libs — BLE isn't compiled in. Needs a custom Arduino-as-IDF-component build. |
+| **802.15.4 / Thread / Zigbee** | ❌ off (v4) | `CONFIG_OPENTHREAD_ENABLED` not set; 15.4-over-`esp_hosted` isn't a supported transport regardless. Custom firmware, and possibly not feasible at all. |
+| **microSD** | ❌ FAIL (v4) | SDMMC pins CLK43/CMD44/D0-3=39-42 are right, but the card slot power is an **on-chip LDO** (not GPIO 45), and `esp_ldo_acquire_channel(109)` reports "already in use" → rail never comes up → `send_op_cond 0x107`. Fixable with proper `sd_pwr_ctrl` LDO config; a P4 power-domain detail. |
+
+## Radio capability — final (stock pioarduino P4 tooling)
+
+| Capability | Works? |
+|---|---|
+| Wi-Fi STA connect / scan | ✅ |
+| Wi-Fi SoftAP (captive portal) | ✅ (same API path; untested but expected) |
+| Wi-Fi monitor / promiscuous | ❌ `ESP_ERR_NOT_SUPPORTED` |
+| Wi-Fi raw 802.11 TX | ❌ `ESP_ERR_NOT_SUPPORTED` |
+| BLE | ❌ compiled out (`CONFIG_BT_ENABLED`) |
+| 802.15.4 / Thread / Zigbee | ❌ compiled out; not an `esp_hosted` transport |
+
+Everything in the ❌ rows needs a **custom Arduino-as-IDF-component build**
+with `esp_hosted` extended config — and even then, monitor / raw-TX are
+`esp_hosted` *protocol* limits, not just config, so they likely stay
+unavailable.
 
 ## Takeaways
 
 1. **The P4 + M5Unified path is viable.** Display, touch, IMU, PSRAM all
-   work with no custom driver work. The UI kit + HAL port (ADR-0013 §3, §4)
+   work with no custom driver work — the UI kit + HAL port (ADR-0013 §3/§4)
    is unblocked.
-2. **The C6 radio works — for STA/AP, not monitor.** The v1/v2 "crash on any
-   Wi-Fi" was just the wrong SDIO pins; `WiFi.setPins()` with the Tab5's
-   SDIO2 → C6 wiring (CLK 12 / CMD 13 / D0–3 11,10,9,8 / RST 15) fixes it.
-   Scan + connect + (presumably) SoftAP go through `esp_hosted` fine. But
-   **promiscuous / monitor mode returns `ESP_ERR_NOT_SUPPORTED`** — the RPC
-   transport does not carry a raw-packet firehose.
-3. **So on the Tab5, `wifi.*` is scan / AP class only** (`wifi.scan`,
-   `wifi.wardrive`, `wifi.portal`), **not monitor class** (`wifi.monitor`,
-   `wifi.probe`, `wifi.handshake`, `wifi.deauth` all need promiscuous —
-   those stay StickS3-only). This *reinforces* the fleet model: the Stick
-   sniffs, the Tab5 scans + sees + does Thread/USB.
-4. Still to scope: BLE over `esp_hosted` (NimBLE), raw 802.11 TX
-   (`esp_wifi_80211_tx`), 802.15.4 (Thread/Zigbee — is the C6's 15.4 even
-   reachable from the P4 host?), SD (`SD_MMC` pins), and the keyboard.
+2. **The Tab5 is not a radio station.** With stock tooling the C6 gives you
+   `wifi.scan` and `wifi.portal` — nothing else. It is a *worse* radio node
+   than a StickS3 + RF Pack in every dimension.
+3. **The Tab5's fleet value is the camera, USB host, big touch screen +
+   keyboard, and compute** (dual RISC-V, 32 MB PSRAM) — not radios. Its
+   toolsets are `camera`, `usbhost`, `canbus`/`rs485`, plus `wifi.scan` /
+   `wifi.portal`. The operator-console role (ADR-0013 §8) matters more given
+   the thin radio story.
+4. **This needs an ADR-0013 amendment** — §6's toolset table changes
+   materially (drop `thread`/`ieee802154` and `ble` from the initial scope;
+   narrow `wifi` to scan/AP).
 
 ## Next actions
 
-- [ ] Scope the rest of the C6: BLE scan (NimBLE), `esp_wifi_80211_tx`,
-      whether 802.15.4 is exposed over `esp_hosted` at all.
-- [ ] `SD_MMC` with explicit `setPins()` / 4-bit width for the Tab5 slot.
-- [ ] Keyboard: trace the M-Bus header, or test USB-HID host enumeration.
+- [ ] ADR-0013 amendment: Tab5 radio scoping (done → link it here).
+- [ ] microSD LDO power config (`sd_pwr_ctrl` on-chip LDO) — needed for
+      store-and-forward (§7).
+- [ ] Keyboard: trace the M-Bus header / test USB-HID host enumeration.
+- [ ] Camera (`esp_cam` / M5Unified) bring-up — the Tab5's headline toolset.
 - [ ] Copy the board-agnostic sources + a Tab5 `board_profile.h`; wire
-      `dispatch` + a WS `ws_station`; declare Tab5 toolsets
-      (`camera`/`usbhost`/`wifi`(scan)/... ) to the collector — which needs
-      no changes (ADR-0013 §8).
-- [ ] ADR-0013 follow-up note: monitor-mode confirmed unsupported over the
-      C6 → Tab5 `wifi.*` scope narrowed to scan/AP.
+      `dispatch` + WS `ws_station`; declare `wifi`(scan) + the Tab5-specific
+      toolsets to the collector (no collector changes needed — ADR-0013 §8).

@@ -1,26 +1,26 @@
-// sferic-tab5 bring-up spike (ADR-0013 §2) — v3: the C6 radio.
+// sferic-tab5 bring-up spike (ADR-0013 §2) — v4: finish scoping the radio + SD.
 //
-// v1/v2 established: P4 toolchain + M5Unified work; display/touch/IMU/PSRAM
-// pass; touching Wi-Fi crashed because esp_hosted used the Espressif-devkit
-// SDIO pins, not the Tab5's.
+// Settled so far: toolchain OK; display/touch/IMU/PSRAM OK; C6 Wi-Fi link OK
+// via WiFi.setPins(12,13,11,10,9,8,15); STA + scan OK; monitor mode =
+// ESP_ERR_NOT_SUPPORTED over esp_hosted.
 //
-// The fix (arduino-esp32 3.2.1, PR #11513): WiFi.setPins(clk,cmd,d0..d3,rst)
-// with the Tab5's SDIO2 -> C6 wiring, called before any Wi-Fi use.
-//   CLK 12  CMD 13  D0 11  D1 10  D2 9  D3 8  RST 15
-//
-// This spike: bring the C6 up, scan, then the real ADR §2 question —
-// does *promiscuous / monitor mode* work over esp_hosted?
+// v4 checks: raw 802.11 TX (esp_wifi_80211_tx), and the microSD slot on
+// SDMMC pins CLK43/CMD44/D0-3=39/40/41/42 (power pin 45, active LOW).
+// BLE and 802.15.4/Thread are compile-time OFF in the stock pioarduino P4
+// libs (CONFIG_BT_ENABLED / CONFIG_OPENTHREAD_ENABLED not set) — noted, not
+// probed here.
 
 #include <M5Unified.h>
+#include <SD_MMC.h>
 #include <WiFi.h>
 #include <esp_wifi.h>
 
-// Tab5 SDIO2 -> ESP32-C6
 static constexpr int C6_CLK = 12, C6_CMD = 13, C6_D0 = 11, C6_D1 = 10, C6_D2 = 9,
                      C6_D3 = 8, C6_RST = 15;
+static constexpr int SD_CLK = 43, SD_CMD = 44, SD_D0 = 39, SD_D1 = 40,
+                     SD_D2 = 41, SD_D3 = 42, SD_PWR = 45;
 
 namespace {
-
 void line(const char* name, const char* verdict, const char* fmt, ...) {
   char d[120];
   va_list ap;
@@ -34,12 +34,6 @@ void line(const char* name, const char* verdict, const char* fmt, ...) {
   M5.Display.setTextColor(c, TFT_BLACK);
   M5.Display.printf("%-9s %-4s %s\n", name, verdict, d);
 }
-
-volatile uint32_t g_pkts = 0;
-void promiscCb(void*, wifi_promiscuous_pkt_type_t) {
-  g_pkts = g_pkts + 1;
-}
-
 }  // namespace
 
 void setup() {
@@ -51,58 +45,52 @@ void setup() {
   M5.Display.fillScreen(TFT_BLACK);
   M5.Display.setTextSize(2);
   M5.Display.setCursor(8, 8);
+  Serial.println("\n\n=== sferic-tab5 spike v4 — radio TX + SD (ADR-0013) ===");
+  M5.Display.printf("sferic-tab5 spike v4\n\n");
 
-  Serial.println("\n\n=== sferic-tab5 bring-up spike v3 — C6 radio (ADR-0013) ===");
-  Serial.printf("chip %s rev %d, %d cores @ %d MHz, arduino %s\n",
-                ESP.getChipModel(), ESP.getChipRevision(), ESP.getChipCores(),
-                getCpuFrequencyMhz(), ESP_ARDUINO_VERSION_STR);
-  M5.Display.printf("sferic-tab5 spike v3 (C6 radio)\narduino %s\n\n",
-                   ESP_ARDUINO_VERSION_STR);
+  // --- microSD on SDMMC ---
+  pinMode(SD_PWR, OUTPUT);
+  digitalWrite(SD_PWR, LOW);  // power on (active LOW per variant)
+  delay(50);
+  bool sd = SD_MMC.setPins(SD_CLK, SD_CMD, SD_D0, SD_D1, SD_D2, SD_D3);
+  if (sd && SD_MMC.begin("/sdcard", false /*1bit? no, 4-bit*/, false)) {
+    line("sd-4bit", "PASS", "%llu MB, type %d",
+         SD_MMC.cardSize() / (1024ULL * 1024ULL), (int)SD_MMC.cardType());
+  } else {
+    SD_MMC.end();
+    sd = SD_MMC.setPins(SD_CLK, SD_CMD, SD_D0) &&
+         SD_MMC.begin("/sdcard", true /*1-bit*/, false);
+    line("sd", sd ? "PASS" : "FAIL",
+         sd ? "1-bit %llu MB" : "both 4-bit and 1-bit failed",
+         sd ? SD_MMC.cardSize() / (1024ULL * 1024ULL) : 0ULL);
+  }
 
-  line("psram", ESP.getPsramSize() ? "PASS" : "FAIL", "%u MB",
-       (unsigned)(ESP.getPsramSize() / (1024 * 1024)));
-  line("display", "PASS", "%dx%d", M5.Display.width(), M5.Display.height());
-
-  // --- C6 over esp_hosted / SDIO2 ---
-  const bool pinsOk = WiFi.setPins(C6_CLK, C6_CMD, C6_D0, C6_D1, C6_D2, C6_D3, C6_RST);
-  line("c6-pins", pinsOk ? "PASS" : "FAIL", "clk12 cmd13 d0-3=11/10/9/8 rst15");
-
+  // --- C6 Wi-Fi (regression) ---
+  WiFi.setPins(C6_CLK, C6_CMD, C6_D0, C6_D1, C6_D2, C6_D3, C6_RST);
   WiFi.mode(WIFI_STA);
   delay(300);
-  const uint8_t* mac = WiFi.macAddress().length() ? nullptr : nullptr;
-  (void)mac;
-  line("c6-link", WiFi.getMode() == WIFI_STA ? "PASS" : "FAIL", "sta mode, mac %s",
-       WiFi.macAddress().c_str());
-
   const int n = WiFi.scanNetworks(false, true);
-  if (n >= 0) {
-    char top[64] = "-";
-    if (n > 0)
-      snprintf(top, sizeof(top), "'%s' %ddBm ch%d", WiFi.SSID(0).c_str(),
-               WiFi.RSSI(0), WiFi.channel(0));
-    line("wifi-scan", "PASS", "%d APs, top %s", n, top);
-  } else {
-    line("wifi-scan", "FAIL", "scanNetworks -> %d", n);
-  }
+  line("wifi-scan", n >= 0 ? "PASS" : "FAIL", "%d APs", n);
 
-  // --- THE GATE: monitor mode over esp_hosted ---
-  esp_err_t e1 = esp_wifi_set_promiscuous(true);
-  esp_err_t e2 = esp_wifi_set_promiscuous_rx_cb(&promiscCb);
-  if (e1 != ESP_OK || e2 != ESP_OK) {
-    line("monitor", "FAIL", "set_promiscuous=0x%x set_rx_cb=0x%x", e1, e2);
-  } else {
-    g_pkts = 0;
-    const uint8_t chans[] = {1, 6, 11};
-    for (uint8_t c : chans) {
-      esp_wifi_set_channel(c, WIFI_SECOND_CHAN_NONE);
-      delay(1200);
-    }
-    esp_wifi_set_promiscuous(false);
-    line("monitor", g_pkts > 0 ? "PASS" : "FAIL", "%lu frames in 3.6s on ch 1/6/11",
-         (unsigned long)g_pkts);
-  }
+  // --- raw 802.11 TX over esp_hosted ---
+  // A minimal well-formed 802.11 probe-request frame.
+  uint8_t frame[] = {
+      0x40, 0x00, 0x00, 0x00,                          // FC (probe req), dur
+      0xff, 0xff, 0xff, 0xff, 0xff, 0xff,              // addr1 broadcast
+      0x58, 0xe6, 0xc5, 0x21, 0x62, 0x50,              // addr2 (this C6)
+      0xff, 0xff, 0xff, 0xff, 0xff, 0xff,              // addr3
+      0x00, 0x00,                                      // seq
+      0x00, 0x00,                                      // SSID tag, len 0
+  };
+  esp_err_t tx = esp_wifi_80211_tx(WIFI_IF_STA, frame, sizeof(frame), false);
+  line("raw-tx", tx == ESP_OK ? "PASS" : "FAIL",
+      "esp_wifi_80211_tx -> 0x%x (%s)", tx,
+      tx == ESP_OK ? "sent" : esp_err_to_name(tx));
 
-  Serial.println("=== spike v3 done ===");
+  line("ble", "N/A", "CONFIG_BT_ENABLED off in stock P4 libs");
+  line("thread", "N/A", "CONFIG_OPENTHREAD_ENABLED off; 15.4 not over hosted");
+
+  Serial.println("=== spike v4 done ===");
 }
 
 void loop() {

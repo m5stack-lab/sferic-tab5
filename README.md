@@ -1,3 +1,5 @@
+<p align="center"><img src="docs/banner.svg" alt="sferic-tab5: Tab5 station for the sferic lightning network" width="100%"></p>
+
 # sferic-tab5
 
 **sferic** fleet-station firmware for the **M5Stack Tab5** (ESP32-P4).
@@ -51,3 +53,8 @@ uv tool install --python 3.12 platformio
 ## License
 
 MIT © 2026 ry-ops
+
+<!-- org-footer -->
+---
+
+<p align="center"><sub>Part of <a href="https://github.com/m5stack-lab">m5stack-lab</a> · unofficial M5Stack projects, not affiliated with M5Stack · built by <a href="https://github.com/ry-ops">ry-ops</a></sub></p>

@@ -1,9 +1,9 @@
 # sferic-tab5
 
 **sferic** fleet-station firmware for the **M5Stack Tab5** (ESP32-P4).
-Plan of record: [`sferic-sticks3` ADR-0013](https://github.com/ry-ops/sferic-sticks3/blob/main/docs/adr/0013-tab5-station.md).
-Pairs with [`sferic-collector`](https://github.com/ry-ops/sferic-collector)
-(the C2 server) and [`sferic-sticks3`](https://github.com/ry-ops/sferic-sticks3)
+Plan of record: [`sferic-sticks3` ADR-0013](https://github.com/m5stack-lab/sferic-sticks3/blob/main/docs/adr/0013-tab5-station.md).
+Pairs with [`sferic-collector`](https://github.com/m5stack-lab/sferic-collector)
+(the C2 server) and [`sferic-sticks3`](https://github.com/m5stack-lab/sferic-sticks3)
 (the StickS3 firmware — where the board-agnostic code lives).
 
 ## Status: bring-up spike
